@@ -5241,3 +5241,42 @@ func TestRestoreInplaceSourceSizeCarrierAnnotation(t *testing.T) {
 		assert.NotContains(t, got.GetAnnotations(), velerov1api.InplaceRestoreSourceSizeAnnotation)
 	})
 }
+
+// TestRestorePVCWithPodVolumeBackupWithoutPV verifies that a PVC whose volume
+// was backed up with a pod volume backup is reset for dynamic provisioning
+// even when the PV itself is not part of the restore, aligning the PVR path
+// with the CSI restore behavior (#10505).
+func TestRestorePVCWithPodVolumeBackupWithoutPV(t *testing.T) {
+	h := newHarness(t)
+	h.DiscoveryClient.WithAPIResource(test.PVCs())
+	require.NoError(t, h.discoveryHelper.Refresh())
+
+	pvc := builder.ForPersistentVolumeClaim("ns-1", "pvc-1").VolumeName("pv-1").Result()
+
+	data := &Request{
+		Log:          h.log,
+		Restore:      defaultRestore().Result(),
+		Backup:       defaultBackup().Result(),
+		BackupReader: test.NewTarWriter(t).AddItems("persistentvolumeclaims", pvc).Done(),
+		BackupVolumeInfoMap: map[string]volume.BackupVolumeInfo{
+			"pv-1": {
+				BackupMethod: volume.PodVolumeBackup,
+				PVName:       "pv-1",
+				PVBInfo: &volume.PodVolumeBackupInfo{
+					SnapshotHandle: "testSnapshotHandle",
+					Size:           100,
+					NodeName:       "testNode",
+				},
+			},
+		},
+	}
+
+	warnings, errs := h.restorer.Restore(data, nil, nil)
+	assertEmptyResults(t, warnings, errs)
+
+	restored, err := h.DynamicClient.Resource(test.PVCs().GVR()).Namespace("ns-1").Get(t.Context(), "pvc-1", metav1.GetOptions{})
+	require.NoError(t, err)
+	volumeName, _, err := unstructured.NestedString(restored.Object, "spec", "volumeName")
+	require.NoError(t, err)
+	assert.Empty(t, volumeName, "PVC should be reset for dynamic provisioning when its PV is not restored")
+}

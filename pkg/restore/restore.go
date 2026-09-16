@@ -1829,6 +1829,14 @@ func (ctx *restoreContext) restoreItem(obj *unstructured.Unstructured, groupReso
 			if ctx.pvsToProvision.Has(pvc.Spec.VolumeName) {
 				restoreLogger.Infof("Resetting PersistentVolumeClaim for dynamic provisioning")
 				unstructured.RemoveNestedField(obj.Object, "spec", "volumeName")
+			} else if volumeInfo, ok := ctx.backupVolumeInfoMap[pvc.Spec.VolumeName]; ok && volumeInfo.BackupMethod == volume.PodVolumeBackup {
+				// The PV is not part of this restore (excluded by resource filters or
+				// missing from the backup), so pvsToProvision was never populated for
+				// it. Align with the CSI restore behavior: reset the binding anyway so
+				// the PVC gets dynamically re-provisioned and the pod volume restore
+				// can populate the new volume.
+				restoreLogger.Infof("Resetting PersistentVolumeClaim for dynamic provisioning because its volume has a pod volume backup and its PV is not restored")
+				unstructured.RemoveNestedField(obj.Object, "spec", "volumeName")
 			}
 		}
 
